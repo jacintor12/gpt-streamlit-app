@@ -9,11 +9,20 @@ import re
 from bs4 import BeautifulSoup
 import markdown
 
-# -------------------------------
-# App & Clients Setup
-# -------------------------------
 st.set_page_config(page_title="Smartsheet GPT Analyst", layout="wide")
 st.title("Smartsheet GPT Analyst")
+
+# Inject custom CSS for larger font size for non-title text
+st.markdown("""
+    <style>
+    .stTextInput label, .stTextArea label, .stMarkdown, .stDataFrameContainer, .stButton button, .stFileUploader label {
+        font-size: 14pt !important;
+    }
+    .stTextInput input, .stTextArea textarea, .stFileUploader input {
+        font-size: 14pt !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 SMARTSHEET_TOKEN = st.secrets["SMARTSHEET_ACCESS_TOKEN"]
@@ -236,4 +245,77 @@ if submit_clicked and question:
             st.error(f"Error: {e}")
 elif submit_clicked:
     st.warning("Please enter a question before submitting.")
+
+# -------------------------------
+# Tabs Section (Smartsheet Sheet Viewer)
+# -------------------------------
+tabs = st.tabs(["General Analysis", "Sheets Viewer", "Graphs"])
+
+with tabs[0]:
+    st.markdown(
+        "[Open General Analysis](https://chatgpt.com/g/g-68be080896048191a93e8384b6a52f4b-monitoring-n-evaluation?model=gpt-4o)",
+        unsafe_allow_html=True
+    )
+
+with tabs[1]:
+    st.header("Smartsheet Sheet Viewer")
+
+    # Load workspace_id from config.json if present and not in session_state
+    import json
+    config_file = "config.json"
+    if "workspace_id" not in st.session_state:
+        try:
+            with open(config_file, "r") as f:
+                config = json.load(f)
+            st.session_state["workspace_id"] = config.get("workspace_id", "")
+        except Exception:
+            st.session_state["workspace_id"] = ""
+
+    workspace_id_input = st.text_input(
+        "Enter Smartsheet Workspace ID",
+        value=st.session_state["workspace_id"],
+        key="workspace_id_input"
+    )
+    if st.button("Save Workspace ID", key="save_workspace_id"):
+        st.session_state["workspace_id"] = workspace_id_input
+        # Save to config.json
+        try:
+            with open(config_file, "r") as f:
+                config = json.load(f)
+        except Exception:
+            config = {}
+        config["workspace_id"] = workspace_id_input
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+    # Auto-fetch sheets when workspace_id is set
+    sheets_list = []
+    if "workspace_id" in st.session_state and st.session_state["workspace_id"]:
+        try:
+            workspace = ss.Workspaces.get_workspace(st.session_state["workspace_id"])
+            sheets_list = [(sheet.name, sheet.id) for sheet in workspace.sheets]
+        except Exception as e:
+            st.error(f"Error fetching sheets for workspace: {e}")
+
+    if sheets_list:
+        sheet_options = {name: sid for name, sid in sheets_list}
+        selected_sheet_name = st.selectbox("Select a sheet to view", list(sheet_options.keys()), key="sheet_select")
+        selected_sheet_id = sheet_options[selected_sheet_name]
+
+
+        if st.button("Load Sheet Data", key="load_sheet_data"):
+            try:
+                sheet_df = smartsheet_to_df(int(selected_sheet_id))
+                st.session_state["selected_sheet_df"] = sheet_df
+                st.success(f"Fetched {len(sheet_df)} rows from sheet '{selected_sheet_name}' (ID: {selected_sheet_id})")
+            except Exception as e:
+                st.error(f"Error fetching sheet: {e}")
+
+        # Show dataframe if already loaded
+        if "selected_sheet_df" in st.session_state:
+            st.dataframe(st.session_state["selected_sheet_df"])
+            if st.button("Save for Analysis", key="save_for_analysis"):
+                st.session_state["sheet_data"] = st.session_state["selected_sheet_df"]
+                st.success("Sheet data saved for analysis!")
+
 
