@@ -2,7 +2,7 @@ streamlit
 smartsheet-python-sdk
 openai
 pandas
-docx
+python-docx
 PyPDF2
 beautifulsoup4
 markdown
