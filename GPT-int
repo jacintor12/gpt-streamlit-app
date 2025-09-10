@@ -1,0 +1,56 @@
+import os
+import streamlit as st
+import pandas as pd
+import smartsheet
+from openai import OpenAI
+
+st.set_page_config(page_title="Smartsheet GPT Analyst", layout="wide")
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+SMARTSHEET_TOKEN = st.secrets["SMARTSHEET_ACCESS_TOKEN"]
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+ss = smartsheet.Smartsheet(SMARTSHEET_TOKEN)
+ss.errors_as_exceptions(True)
+ss._session.headers["Smartsheet-Change-Agent"] = "psi-gpt-analytics/1.0"
+
+def smartsheet_to_df(sheet_id: int, page_size=5000) -> pd.DataFrame:
+    sheet = ss.Sheets.get_sheet(sheet_id, page_size=page_size, include="columns").data
+    colmap = {c.id: c.title for c in sheet.columns}
+    rows = []
+    for r in sheet.rows:
+        row = { (colmap.get(c.column_id, str(c.column_id))): (c.display_value if c.display_value is not None else c.value)
+                for c in r.cells }
+        row["_rowId"] = r.id
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    # light typing
+    for c in df.columns:
+        if c.startswith("_"): continue
+        try: df[c] = pd.to_numeric(df[c], errors="ignore")
+        except: pass
+        try: df[c] = pd.to_datetime(df[c], errors="ignore")
+        except: pass
+    return df
+
+def analyze(df: pd.DataFrame, question: str):
+    schema = [{"name": c, "dtype": str(df[c].dtype), "unique": int(df[c].nunique())} for c in df.columns]
+    sample = df.head(30).to_dict(orient="records")
+    system = "You are a data analyst. Be concise, quantify, flag data issues, suggest next actions."
+    user = f"Question: {question}\nSchema: {schema}\nPreview (first 30 rows): {sample}"
+    resp = client.chat.completions.create(model="gpt-4o", temperature=0.2,
+                                          messages=[{"role":"system","content":system},
+                                                    {"role":"user","content":user}])
+    return resp.choices[0].message.content
+
+st.title("🧠 Smartsheet GPT Analyst")
+with st.sidebar:
+    sheet_id = st.text_input("Smartsheet Sheet ID", value="2581232018739076")
+    q = st.text_input("Your question", value="Which items are at risk in the next 2 weeks and why?")
+    run = st.button("Analyze")
+
+if run and sheet_id:
+    df = smartsheet_to_df(int(sheet_id))
+    st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns.")
+    st.dataframe(df.head(20), use_container_width=True)
+    st.subheader("Insights")
+    st.write(analyze(df, q))

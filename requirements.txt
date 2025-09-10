@@ -1,0 +1,6 @@
+streamlit
+smartsheet-python-sdk
+openai
+pandas
+docx
+PyPDF2
