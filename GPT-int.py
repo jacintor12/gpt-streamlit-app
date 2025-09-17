@@ -8,12 +8,14 @@ from openai import OpenAI
 import re
 from bs4 import BeautifulSoup
 import markdown
+import plotly.express as px
 
 st.set_page_config(page_title="Smartsheet GPT Analyst", layout="wide")
 st.title("Smartsheet GPT Analyst")
 
 # Inject custom CSS for larger font size for non-title text
-st.markdown("""
+st.markdown(
+    """
     <style>
     .stTextInput label, .stTextArea label, .stMarkdown, .stDataFrameContainer, .stButton button, .stFileUploader label {
         font-size: 14pt !important;
@@ -22,7 +24,9 @@ st.markdown("""
         font-size: 14pt !important;
     }
     </style>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True
+)
 
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 SMARTSHEET_TOKEN = st.secrets["SMARTSHEET_ACCESS_TOKEN"]
@@ -61,6 +65,150 @@ def smartsheet_to_df(sheet_id: int, page_size: int = 5000) -> pd.DataFrame:
         except Exception:
             pass
     return df
+
+# -------------------------------
+# AI Graph Generation
+# -------------------------------
+def generate_ai_graph_code(df: pd.DataFrame, user_prompt: str) -> str:
+    """
+    Generate Plotly code based on user prompt and data schema using GPT-4
+    
+    Args:
+        df: DataFrame to analyze
+        user_prompt: User's natural language request for the graph
+    
+    Returns:
+        Generated Python/Plotly code as string
+    """
+    if df is None or df.empty:
+        return "# Error: No data available"
+    
+    # Get data schema and sample
+    schema = []
+    for col in df.columns:
+        col_info = {
+            "name": col,
+            "dtype": str(df[col].dtype),
+            "unique_values": int(df[col].nunique()),
+            "sample_values": df[col].dropna().head(3).tolist()
+        }
+        schema.append(col_info)
+    
+    # Get first few rows as sample
+    sample_data = df.head(5).to_dict(orient="records")
+    
+    # Create the system prompt for GPT
+    system_prompt = """You are an expert data visualization developer specializing in Plotly Express for Streamlit applications. 
+    Generate Python code using plotly.express to create interactive visualizations based on user requests.
+
+    IMPORTANT REQUIREMENTS:
+    1. Always import plotly.express as px at the top
+    2. The DataFrame is already available as 'df'
+    3. Generate complete, executable code that works in Streamlit
+    4. Use appropriate chart types based on data and request
+    5. Include proper titles, labels, and hover data
+    6. Add layout customizations when beneficial
+    7. ALWAYS assign the figure to variable 'fig' (do NOT use fig.show())
+    8. Handle missing data appropriately
+    9. Use appropriate color schemes and styling
+    10. For grouped/comparative charts, use appropriate grouping techniques
+    11. Ensure all column names referenced actually exist in the data
+
+    EXAMPLE OUTPUT FORMAT:
+    ```python
+    import plotly.express as px
+
+    # Your descriptive comment here
+    fig = px.bar(
+        df,
+        x="column_name",
+        y="value_column",
+        title="Descriptive Title",
+        labels={"x": "X Label", "y": "Y Label"},
+        color="category_column"
+    )
+    
+    fig.update_layout(
+        xaxis={'categoryorder':'total descending'},
+        showlegend=True
+    )
+    
+    # The fig variable will be automatically displayed in Streamlit
+    ```
+
+    CRITICAL: Always end with the 'fig' variable assigned, never use fig.show() or return statements.
+    Only return the Python code, no explanations."""
+    
+    # Create the user message with data context
+    user_message = f"""
+    User Request: {user_prompt}
+
+    Data Schema:
+    {schema}
+
+    Sample Data (first 5 rows):
+    {sample_data}
+
+    Generate appropriate Plotly Express code for this visualization request.
+    """
+    
+    try:
+        # Call GPT-4 to generate the code
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ]
+        )
+        
+        generated_code = response.choices[0].message.content
+        
+        # Clean up the code (remove markdown code blocks if present)
+        if "```python" in generated_code:
+            generated_code = generated_code.split("```python")[1].split("```")[0]
+        elif "```" in generated_code:
+            generated_code = generated_code.split("```")[1].split("```")[0]
+        
+        return generated_code.strip()
+        
+    except Exception as e:
+        return f"# Error generating code: {str(e)}"
+
+def execute_ai_graph_code(code: str, df: pd.DataFrame):
+    """
+    Safely execute the generated Plotly code and return the figure
+    
+    Args:
+        code: Generated Python code
+        df: DataFrame to use in execution
+    
+    Returns:
+        Plotly figure object or None if error
+    """
+    try:
+        # Create a safe execution environment
+        exec_globals = {
+            'px': px,
+            'pd': pd,
+            'df': df,
+            'fig': None
+        }
+        
+        # Remove fig.show() calls and replace with storing the figure
+        modified_code = code.replace('fig.show()', '# fig stored for return')
+        
+        # Execute the code
+        exec(modified_code, exec_globals)
+        
+        # Return the figure if it was created
+        fig = exec_globals.get('fig', None)
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error executing generated code: {str(e)}")
+        return None
 
 # -------------------------------
 # CSV Export Utility
@@ -207,9 +355,7 @@ if submit_clicked and question:
             st.success("GPT Response:")
             st.write(answer)
 
-            # Try to extract markdown table
             # Try to extract markdown table first
-            import re
             table_match = re.search(r'(\|.+\|\n)+', answer)
             gpt_df = None
             if table_match:
@@ -222,10 +368,9 @@ if submit_clicked and question:
                         for row in lines[2:] if len(row.split('|')) == len(columns)+2
                     ]
                     gpt_df = pd.DataFrame(data_rows, columns=columns)
+            
             # If markdown table not found, try HTML table
             if gpt_df is None:
-                import markdown
-                from bs4 import BeautifulSoup
                 html = markdown.markdown(answer)
                 soup = BeautifulSoup(html, 'html.parser')
                 table = soup.find("table")
@@ -234,6 +379,7 @@ if submit_clicked and question:
                     headers = [th.get_text(strip=True) for th in rows[0].find_all("th")]
                     data = [[td.get_text(strip=True) for td in row.find_all("td")] for row in rows[1:]]
                     gpt_df = pd.DataFrame(data, columns=headers)
+            
             # Display and download if table found
             if gpt_df is not None and not gpt_df.empty:
                 st.dataframe(gpt_df)
@@ -247,7 +393,7 @@ elif submit_clicked:
     st.warning("Please enter a question before submitting.")
 
 # -------------------------------
-# Tabs Section (Smartsheet Sheet Viewer)
+# Tabs Section
 # -------------------------------
 tabs = st.tabs(["General Analysis", "Sheets Viewer", "Graphs"])
 
@@ -261,8 +407,6 @@ with tabs[1]:
     st.header("Smartsheet Sheet Viewer")
 
     # Load workspace_id from config.json if present and not in session_state
-    import json
-    config_file = "config.json"
     if "workspace_id" not in st.session_state:
         try:
             with open(config_file, "r") as f:
@@ -302,7 +446,6 @@ with tabs[1]:
         selected_sheet_name = st.selectbox("Select a sheet to view", list(sheet_options.keys()), key="sheet_select")
         selected_sheet_id = sheet_options[selected_sheet_name]
 
-
         if st.button("Load Sheet Data", key="load_sheet_data"):
             try:
                 sheet_df = smartsheet_to_df(int(selected_sheet_id))
@@ -318,4 +461,126 @@ with tabs[1]:
                 st.session_state["sheet_data"] = st.session_state["selected_sheet_df"]
                 st.success("Sheet data saved for analysis!")
 
+with tabs[2]:
+    st.header("Interactive Graphs Generator")
 
+    # Data source selection
+    data_source = st.radio("Select data source:", ["Smartsheet Sheet", "Upload Spreadsheet"], key="graph_data_source")
+
+    df = None
+    # Option 1: Use fetched Smartsheet sheet data
+    if data_source == "Smartsheet Sheet":
+        if "selected_sheet_df" in st.session_state:
+            df = st.session_state["selected_sheet_df"]
+            st.success("Using data from selected Smartsheet sheet.")
+        else:
+            st.info("No Smartsheet sheet data loaded. Please load a sheet in the Sheets Viewer tab.")
+
+    # Option 2: Upload spreadsheet
+    if data_source == "Upload Spreadsheet":
+        uploaded_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"], key="graph_file_uploader")
+        if uploaded_file:
+            try:
+                if uploaded_file.name.endswith(".csv"):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file)
+                st.success(f"Loaded {len(df)} rows from {uploaded_file.name}")
+            except Exception as e:
+                st.error(f"Error loading file: {e}")
+
+    # If we have a dataframe, show graph options
+    if df is not None:
+        st.dataframe(df)
+        
+        # Graph generation method selection
+        st.subheader("Choose Graph Generation Method")
+        generation_method = st.radio(
+            "How would you like to create your graph?",
+            ["🤖 AI-Powered Generation", "🔧 Manual Configuration"],
+            key="generation_method"
+        )
+        
+        if generation_method == "🤖 AI-Powered Generation":
+            # AI-powered graph generation section
+            st.markdown("### AI Graph Generation")
+            st.markdown("Describe what kind of visualization you want in natural language:")
+            
+            # Example prompts
+            with st.expander("📝 Example Prompts"):
+                st.markdown("""
+                **Examples of what you can ask:**
+                - "Create a bar chart showing the planned versus actual performance indicators by quarter with different colors for each quarter"
+                - "Generate an interactive line chart showing trends over time"
+                - "Make a pie chart displaying the top five grantees based on performance indicators"
+                - "Show a grouped bar chart comparing planned vs actual values by grantee"
+                - "Create a scatter plot showing the relationship between planned versus actual objectives met by quarter"
+                - "Generate a time series chart showing quarterly performance"
+                """)
+            
+            # User prompt input
+            user_prompt = st.text_area(
+                "Describe your visualization:",
+                placeholder="e.g., Create an interactive bar chart showing call duration by department with different colors for each call type",
+                height=100,
+                key="ai_graph_prompt"
+            )
+            
+            if st.button("🚀 Generate AI Graph", key="generate_ai_graph"):
+                if user_prompt.strip():
+                    with st.spinner("🤖 AI is generating your graph code..."):
+                        generated_code = generate_ai_graph_code(df, user_prompt)
+                        
+                        if "Error" not in generated_code:
+                            st.success("✅ Code generated successfully!")
+                            
+                            # Show the generated code
+                            with st.expander("📋 View Generated Code"):
+                                st.code(generated_code, language="python")
+                            
+                            # Execute the code and show the graph
+                            with st.spinner("📊 Creating your visualization..."):
+                                fig = execute_ai_graph_code(generated_code, df)
+                                
+                                if fig is not None:
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    st.success("🎉 Graph generated successfully!")
+                                else:
+                                    st.error("❌ Failed to execute the generated code.")
+                        else:
+                            st.error(f"❌ {generated_code}")
+                else:
+                    st.warning("⚠️ Please enter a description for your visualization.")
+        
+        else:
+            # Manual configuration section - simplified for basic charts
+            st.markdown("### Manual Chart Configuration")
+            st.info("💡 For advanced visualizations, try the AI-Powered Generation option above!")
+            
+            # Basic chart configuration
+            chart_type = st.selectbox("Select chart type", ["Bar", "Pie", "Line"], key="graph_chart_type")
+            columns = df.columns.tolist()
+            
+            if chart_type == "Pie":
+                values_col = st.selectbox("Values column", columns, key="pie_values_col")
+                names_col = st.selectbox("Names column", columns, key="pie_names_col")
+                
+                fig = px.pie(df, values=values_col, names=names_col, 
+                           title=f"Pie Chart: {values_col} by {names_col}")
+                
+            else:  # Bar or Line charts
+                x_col = st.selectbox("X-axis column", columns, key="graph_x_col")
+                y_col = st.selectbox("Y-axis column", columns, key="graph_y_col")
+                
+                if chart_type == "Bar":
+                    fig = px.bar(df, x=x_col, y=y_col, 
+                               title=f"Bar Chart: {y_col} vs {x_col}")
+                else:  # Line chart
+                    fig = px.line(df, x=x_col, y=y_col, 
+                                title=f"Line Chart: {y_col} vs {x_col}")
+            
+            # Display the chart
+            if 'fig' in locals():
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Please select columns to generate a chart.")
