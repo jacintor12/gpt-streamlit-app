@@ -88,35 +88,53 @@ def generate_ai_graph_code(df: pd.DataFrame, user_prompt: str) -> str:
     sample_data = df.head(5).to_dict(orient="records")
     
     # Create the system prompt for GPT
-    system_prompt = """You are an expert data visualization developer specializing in Plotly Express for Streamlit applications. 
-    Generate Python code using plotly.express to create interactive visualizations based on user requests.
-
-    CRITICAL REQUIREMENTS:
-    1. ONLY use column names that exist in the provided data schema
-    2. Always import plotly.express as px at the top
-    3. The DataFrame is already available as 'df'
-    4. Generate complete, executable code that works in Streamlit
-    5. Use appropriate chart types based on data and request
-    6. Include proper titles, labels, and hover data
-    7. ALWAYS assign the figure to variable 'fig' (do NOT use fig.show())
-    8. Handle missing data appropriately
-    9. Use appropriate color schemes and styling
-    10. For grouped/comparative charts, use appropriate grouping techniques
-    11. If the user asks for columns that don't exist, use the closest available columns
-
-    AVAILABLE COLUMNS ARE LISTED IN THE DATA SCHEMA - DO NOT REFERENCE ANY OTHER COLUMNS!
-
-    EXAMPLE OUTPUT FORMAT:
+    system_prompt = r"""You are an expert Python developer specializing in Plotly Express visualizations.
+    Generate Python code that creates interactive charts using plotly.express (imported as px).
+    
+    REQUIREMENTS:
+    1. Use ONLY the provided column names from the schema - no other columns exist
+    2. Handle data type conversions safely (check if conversion is needed before applying)
+    3. The DataFrame is available as 'df'
+    4. Import plotly.express as px is already done
+    5. Always assign the final chart to a variable named 'fig'
+    6. Never use fig.show() or return statements
+    7. Use appropriate chart types for the data
+    8. Add proper titles and labels
+    
+    SAFE DATA CONVERSION PATTERN:
+    ```python
+    # Safe percentage conversion with error handling
+    def safe_convert_percentage(series):
+        try:
+            # Handle empty/null values
+            series = series.fillna('0%')
+            # Convert percentage strings to float
+            return series.str.rstrip('%').astype('float') / 100.0
+        except:
+            # If conversion fails, try to extract numbers only
+            import re
+            return series.str.extract(r'(\d+(?:\.\d+)?)').astype('float') / 100.0
+    
+    # Check if column contains percentage strings before converting
+    if df['column_name'].dtype == 'object' and df['column_name'].str.contains('%', na=False).any():
+        df['column_name'] = safe_convert_percentage(df['column_name'])
+    
+    # For numeric columns that might be strings
+    if df['column_name'].dtype == 'object':
+        df['column_name'] = pd.to_numeric(df['column_name'], errors='coerce')
+    ```
+    
+    EXAMPLE CODE STRUCTURE:
     ```python
     import plotly.express as px
-
-    # Your descriptive comment here
-    fig = px.bar(
+    
+    # Safe data preparation with type checking
+    # ... data preprocessing ...
+    
+    fig = px.bar(  # or other chart type
         df,
         x="actual_column_name",  # Must be from schema
         y="actual_column_name",  # Must be from schema
-        title="Descriptive Title",
-        labels={"x": "X Label", "y": "Y Label"},
         color="actual_column_name"  # Must be from schema or omit
     )
     
@@ -197,12 +215,13 @@ def execute_ai_graph_code(code: str, df: pd.DataFrame):
         
         cleaned_code = cleaned_code.strip()
         
-        # Create execution environment
+        # Create execution environment with a copy of the DataFrame to avoid modification issues
+        df_copy = df.copy()
         exec_globals = {
             '__builtins__': __builtins__,
             'px': px,
             'pd': pd,
-            'df': df,
+            'df': df_copy,
             'fig': None
         }
         
@@ -215,6 +234,8 @@ def execute_ai_graph_code(code: str, df: pd.DataFrame):
         
     except Exception as e:
         st.error(f"Error executing generated code: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 # -------------------------------
@@ -474,7 +495,7 @@ with tabs[1]:
     sheets_list = []
     if "workspace_id" in st.session_state and st.session_state["workspace_id"]:
         try:
-            workspace = ss.Workspaces.get_workspace(st.session_state["workspace_id"])
+            workspace = ss.Workspaces.get_workspace(st.session_state["workspace_id"], include="sheets")
             sheets_list = [(sheet.name, sheet.id) for sheet in workspace.sheets]
         except Exception as e:
             st.error(f"Error fetching sheets for workspace: {e}")
@@ -535,11 +556,11 @@ with tabs[2]:
         st.subheader("Choose Graph Generation Method")
         generation_method = st.radio(
             "How would you like to create your graph?",
-            ["🤖 AI-Powered Generation", "🔧 Manual Configuration"],
+            ["AI-Powered Generation", "Manual Configuration"],
             key="generation_method"
         )
         
-        if generation_method == "🤖 AI-Powered Generation":
+        if generation_method == "AI-Powered Generation":
             # AI-powered graph generation section
             st.markdown("### AI Graph Generation")
             st.markdown("Describe what kind of visualization you want in natural language:")
@@ -598,6 +619,78 @@ with tabs[2]:
             # Basic chart configuration
             chart_type = st.selectbox("Select chart type", ["Bar", "Pie", "Line"], key="graph_chart_type")
             columns = df.columns.tolist()
+            
+            # Add a simple test button
+            if st.button("🧪 Test Simple Chart", key="test_simple_chart"):
+                try:
+                    # Create a simple bar chart with the first two suitable columns
+                    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+                    if len(numeric_cols) >= 1:
+                        # Try to find a good categorical column for x-axis
+                        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+                        
+                        if categorical_cols and numeric_cols:
+                            x_col = categorical_cols[0]  # First categorical column
+                            y_col = numeric_cols[0]      # First numeric column
+                            
+                            st.write(f"**Testing with:** X={x_col}, Y={y_col}")
+                            
+                            # Create simple bar chart
+                            fig = px.bar(df.head(10), x=x_col, y=y_col, 
+                                       title=f"Test Chart: {y_col} by {x_col}")
+                            st.plotly_chart(fig, use_container_width=True)
+                            st.success("✅ Simple test chart created successfully!")
+                        else:
+                            st.warning("No suitable columns found for chart")
+                    else:
+                        st.warning("No numeric columns found")
+                except Exception as e:
+                    st.error(f"Test chart error: {str(e)}")
+            
+            # Add a percentage data test button
+            if st.button("📊 Test Percentage Chart", key="test_percentage_chart"):
+                try:
+                    # Create a chart specifically for the percentage data
+                    df_test = df.head(10).copy()  # Work with first 10 rows
+                    
+                    # Convert percentage columns safely
+                    percentage_cols = ['Planned Indicator', 'Q1 Actual', 'Q2 Actual', 'Q3 Actual', 'Q4 Actual']
+                    
+                    # Check which columns exist
+                    available_cols = [col for col in percentage_cols if col in df_test.columns]
+                    st.write(f"**Available percentage columns:** {available_cols}")
+                    
+                    if available_cols:
+                        # Convert percentage strings to numbers
+                        for col in available_cols:
+                            try:
+                                # Handle NaN and empty values
+                                df_test[col] = df_test[col].fillna('0%')
+                                # Remove % and convert to float
+                                df_test[col] = df_test[col].str.rstrip('%').astype('float') / 100.0
+                                st.write(f"**Converted {col}:** {df_test[col].tolist()}")
+                            except Exception as e:
+                                st.error(f"Error converting {col}: {e}")
+                        
+                        # Create a simple bar chart
+                        if 'Performance Indicator' in df_test.columns and 'Planned Indicator' in available_cols:
+                            fig = px.bar(df_test, 
+                                       x='Performance Indicator', 
+                                       y='Planned Indicator',
+                                       title='Test: Planned Indicators by Performance Indicator')
+                            st.plotly_chart(fig, use_container_width=True)
+                            st.success("✅ Percentage test chart created successfully!")
+                        else:
+                            st.warning("Required columns not found for percentage chart")
+                    else:
+                        st.warning("No percentage columns found")
+                        
+                except Exception as e:
+                    st.error(f"Percentage chart error: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+            
+            # Regular chart configuration
             
             if chart_type == "Pie":
                 values_col = st.selectbox("Values column", columns, key="pie_values_col")
