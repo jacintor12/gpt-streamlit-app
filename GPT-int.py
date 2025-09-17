@@ -91,18 +91,20 @@ def generate_ai_graph_code(df: pd.DataFrame, user_prompt: str) -> str:
     system_prompt = """You are an expert data visualization developer specializing in Plotly Express for Streamlit applications. 
     Generate Python code using plotly.express to create interactive visualizations based on user requests.
 
-    IMPORTANT REQUIREMENTS:
-    1. Always import plotly.express as px at the top
-    2. The DataFrame is already available as 'df'
-    3. Generate complete, executable code that works in Streamlit
-    4. Use appropriate chart types based on data and request
-    5. Include proper titles, labels, and hover data
-    6. Add layout customizations when beneficial
+    CRITICAL REQUIREMENTS:
+    1. ONLY use column names that exist in the provided data schema
+    2. Always import plotly.express as px at the top
+    3. The DataFrame is already available as 'df'
+    4. Generate complete, executable code that works in Streamlit
+    5. Use appropriate chart types based on data and request
+    6. Include proper titles, labels, and hover data
     7. ALWAYS assign the figure to variable 'fig' (do NOT use fig.show())
     8. Handle missing data appropriately
     9. Use appropriate color schemes and styling
     10. For grouped/comparative charts, use appropriate grouping techniques
-    11. Ensure all column names referenced actually exist in the data
+    11. If the user asks for columns that don't exist, use the closest available columns
+
+    AVAILABLE COLUMNS ARE LISTED IN THE DATA SCHEMA - DO NOT REFERENCE ANY OTHER COLUMNS!
 
     EXAMPLE OUTPUT FORMAT:
     ```python
@@ -111,11 +113,11 @@ def generate_ai_graph_code(df: pd.DataFrame, user_prompt: str) -> str:
     # Your descriptive comment here
     fig = px.bar(
         df,
-        x="column_name",
-        y="value_column",
+        x="actual_column_name",  # Must be from schema
+        y="actual_column_name",  # Must be from schema
         title="Descriptive Title",
         labels={"x": "X Label", "y": "Y Label"},
-        color="category_column"
+        color="actual_column_name"  # Must be from schema or omit
     )
     
     fig.update_layout(
@@ -133,13 +135,19 @@ def generate_ai_graph_code(df: pd.DataFrame, user_prompt: str) -> str:
     user_message = f"""
     User Request: {user_prompt}
 
-    Data Schema:
+    AVAILABLE DATA COLUMNS (ONLY USE THESE):
+    {[col['name'] for col in schema]}
+
+    DETAILED DATA SCHEMA:
     {schema}
 
-    Sample Data (first 5 rows):
+    SAMPLE DATA (first 5 rows):
     {sample_data}
 
-    Generate appropriate Plotly Express code for this visualization request.
+    IMPORTANT: You must ONLY use column names from the available columns list above. 
+    If the user asks for a column that doesn't exist, use the most appropriate available column instead.
+
+    Generate appropriate Plotly Express code for this visualization request using ONLY the available columns.
     """
     
     try:
@@ -178,21 +186,30 @@ def execute_ai_graph_code(code: str, df: pd.DataFrame):
         Plotly figure object or None if error
     """
     try:
-        # Create a safe execution environment
+        # Clean the code first
+        cleaned_code = code.strip()
+        
+        # Remove any markdown code blocks
+        if "```python" in cleaned_code:
+            cleaned_code = cleaned_code.split("```python")[1].split("```")[0]
+        elif "```" in cleaned_code:
+            cleaned_code = cleaned_code.split("```")[1].split("```")[0]
+        
+        cleaned_code = cleaned_code.strip()
+        
+        # Create execution environment
         exec_globals = {
+            '__builtins__': __builtins__,
             'px': px,
             'pd': pd,
             'df': df,
             'fig': None
         }
         
-        # Remove fig.show() calls and replace with storing the figure
-        modified_code = code.replace('fig.show()', '# fig stored for return')
-        
         # Execute the code
-        exec(modified_code, exec_globals)
+        exec(cleaned_code, exec_globals)
         
-        # Return the figure if it was created
+        # Get the figure
         fig = exec_globals.get('fig', None)
         return fig
         
