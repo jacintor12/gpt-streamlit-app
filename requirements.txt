@@ -6,3 +6,4 @@ python-docx
 PyPDF2
 beautifulsoup4
 markdown
+plotly>=5.0.0
